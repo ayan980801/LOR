@@ -554,12 +554,19 @@ class AsyncLORETL:
         @retry(**self._retry())
         async def _write() -> None:
             loop = asyncio.get_event_loop()
-            
+
+            # Determine fully qualified table name
+            parts = table.split(".")
+            if len(parts) == 3:
+                full_table = table
+            else:
+                full_table = f"{self.snowflake_config.sfDatabase}.{self.snowflake_config.sfSchema}.{table}"
+
             # Build write operation
             writer = (
                 df.write.format("snowflake")
                 .options(**self.snowflake_config.__dict__)
-                .option("dbtable", table)
+                .option("dbtable", full_table)
                 .option("on_error", "CONTINUE")
                 .option("column_mapping", "name")
                 .option("keep_column_case", "true")
@@ -715,7 +722,6 @@ class AsyncLORETL:
     async def load_to_snowflake(self, df: DataFrame, table_name: str, table_config: Dict[str, str]) -> None:
         """Asynchronously load DataFrame to Snowflake."""
         snowflake_table = table_config["staging_table_name"]
-        snowflake_table_name_only = snowflake_table.split('.')[-1]
         
         is_valid = await self.validate_dataframe(df, table_name)
         if not is_valid:
@@ -725,27 +731,30 @@ class AsyncLORETL:
         loop = asyncio.get_event_loop()
         row_count = await loop.run_in_executor(None, df.count)
         logging.info(f"Loading {row_count:,} records to Snowflake table: {snowflake_table}")
-        
+
+        # Use fully qualified table name for all Snowflake operations
+        full_table_name = snowflake_table
+
         # Check if table exists
-        table_exists = await self._check_table_exists(snowflake_table)
+        table_exists = await self._check_table_exists(full_table_name)
         
         if self.etl_mode == "historical":
             if table_exists:
                 # For historical mode with existing table, truncate and append
                 logging.info(f"Historical load: Table {snowflake_table} exists. Truncating and loading...")
                 await self._write_snowflake_with_retry(
-                    df, 
-                    snowflake_table_name_only, 
-                    mode="append", 
+                    df,
+                    full_table_name,
+                    mode="append",
                     truncate=True
                 )
             else:
                 # For historical mode without existing table, use overwrite to create
                 logging.info(f"Historical load: Creating new table {snowflake_table}...")
                 await self._write_snowflake_with_retry(
-                    df, 
-                    snowflake_table_name_only, 
-                    mode="overwrite", 
+                    df,
+                    full_table_name,
+                    mode="overwrite",
                     truncate=False
                 )
         else:
@@ -754,18 +763,18 @@ class AsyncLORETL:
                 # Table exists - just append
                 logging.info(f"Incremental load: Appending data to {snowflake_table}")
                 await self._write_snowflake_with_retry(
-                    df, 
-                    snowflake_table_name_only, 
-                    mode="append", 
+                    df,
+                    full_table_name,
+                    mode="append",
                     truncate=False
                 )
             else:
                 # Table doesn't exist - create with overwrite
                 logging.info(f"Incremental load: Creating new table {snowflake_table}...")
                 await self._write_snowflake_with_retry(
-                    df, 
-                    snowflake_table_name_only, 
-                    mode="overwrite", 
+                    df,
+                    full_table_name,
+                    mode="overwrite",
                     truncate=False
                 )
         
